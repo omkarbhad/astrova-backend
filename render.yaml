@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: astrova-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 10000
+      - key: EPHE_PATH
+        value: ./ephe
+      - key: DB_PATH
+        value: ./kundali.db
+      - key: CORS_ORIGINS
+        value: https://astrova.magnova.ai,https://www.astrova.magnova.ai,http://localhost:3000,http://localhost:5173
