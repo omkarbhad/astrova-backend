@@ -3,5 +3,5 @@ uvicorn[standard]==0.22.0
 pyswisseph==2.10.3.2
 pydantic==1.10.12
 python-multipart==0.0.6
-timezonefinder==6.5.2
+pytz==2023.3
 requests==2.31.0

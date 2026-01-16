@@ -15,8 +15,6 @@ from zoneinfo import ZoneInfo
 
 from kundali_maker import BirthInput, kundali, local_to_utc, utc_to_local
 
-from timezonefinder import TimezoneFinder
-
 app = FastAPI(
     title="Kundali API",
     description="Vedic Astrology Birth Chart Generator using Swiss Ephemeris",
@@ -211,10 +209,6 @@ class ReverseGeocodeResponse(BaseModel):
     country: Optional[str] = None
     display_name: Optional[str] = None
 
-
-class TimezoneResponse(BaseModel):
-    tz_name: Optional[str] = None
-    tz_offset_hours: float
 
 
 class BalaCalculatorRequest(BaseModel):
@@ -629,8 +623,6 @@ def _ashtakoota_scores(chart1: dict, chart2: dict) -> List[MatchScoreItem]:
     return scores
 
 
-TZ_FINDER = TimezoneFinder()
-
 
 @app.get("/")
 async def root():
@@ -994,42 +986,6 @@ async def match_kundalis(request: MatchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.get("/api/timezone", response_model=TimezoneResponse)
-async def get_timezone(
-    lat: float,
-    lon: float,
-    year: Optional[int] = None,
-    month: Optional[int] = None,
-    day: Optional[int] = None,
-    hour: Optional[int] = None,
-    minute: Optional[int] = None,
-    second: Optional[int] = None,
-):
-    """Get timezone offset (hours) for a coordinate.
-
-    If local date/time is provided, offset will reflect DST rules for that moment.
-    """
-    try:
-        tz_name = TZ_FINDER.timezone_at(lat=lat, lng=lon) or TZ_FINDER.closest_timezone_at(lat=lat, lng=lon)
-        if not tz_name:
-            raise HTTPException(status_code=404, detail="Timezone not found for coordinates")
-
-        tz = ZoneInfo(tz_name)
-
-        if None not in (year, month, day, hour, minute, second):
-            dt_local = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second), tzinfo=tz)
-        else:
-            dt_local = datetime.now(tz)
-
-        offset = dt_local.utcoffset()
-        offset_hours = float(offset.total_seconds() / 3600.0) if offset is not None else 0.0
-
-        return TimezoneResponse(tz_name=tz_name, tz_offset_hours=offset_hours)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/bala-calculator")
