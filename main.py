@@ -277,39 +277,36 @@ NAKSHATRA_NAMES = [
 
 
 NAKSHATRA_GANA = {
-    # Deva
-    "Ashwini": "Deva", "Mrigashirsha": "Deva", "Punarvasu": "Deva", "Pushya": "Deva",
-    "Hasta": "Deva", "Swati": "Deva", "Anuradha": "Deva", "Shravana": "Deva",
-    "Revati": "Deva", "Uttara Phalguni": "Deva", "Uttara Ashadha": "Deva", "Uttara Bhadrapada": "Deva",
-    # Manushya
-    "Bharani": "Manushya", "Rohini": "Manushya", "Ardra": "Manushya", "Purva Phalguni": "Manushya",
-    "Chitra": "Manushya", "Vishakha": "Manushya", "Jyeshtha": "Manushya", "Dhanishta": "Manushya",
-    "Shatabhisha": "Manushya", "Purva Bhadrapada": "Manushya", "Purva Ashadha": "Manushya",
-    # Rakshasa
-    "Krittika": "Rakshasa", "Ashlesha": "Rakshasa", "Magha": "Rakshasa", "Mula": "Rakshasa",
-    "Purva Phalguni": "Manushya", "Purva Ashadha": "Manushya", "Purva Bhadrapada": "Manushya",
-    "Krittika": "Rakshasa", "Ashlesha": "Rakshasa", "Magha": "Rakshasa", "Mula": "Rakshasa",
-    "Uttara Phalguni": "Deva", "Uttara Ashadha": "Deva", "Uttara Bhadrapada": "Deva",
-    "Jyeshtha": "Manushya", "Vishakha": "Manushya", "Chitra": "Manushya", "Ardra": "Manushya",
-    "Rohini": "Manushya", "Bharani": "Manushya",
-    "Shatabhisha": "Manushya", "Dhanishta": "Manushya",
-    "Mrigashirsha": "Deva", "Punarvasu": "Deva", "Pushya": "Deva", "Hasta": "Deva", "Swati": "Deva",
-    "Anuradha": "Deva", "Shravana": "Deva", "Revati": "Deva",
+    # Deva (divine temperament)
+    "Ashwini": "Deva",
+    "Mrigashirsha": "Deva",
+    "Punarvasu": "Deva",
+    "Pushya": "Deva",
     "Hasta": "Deva",
-    "Chitra": "Manushya",
     "Swati": "Deva",
-    "Vishakha": "Manushya",
     "Anuradha": "Deva",
-    "Jyeshtha": "Manushya",
-    "Mula": "Rakshasa",
-    "Purva Ashadha": "Manushya",
-    "Uttara Ashadha": "Deva",
     "Shravana": "Deva",
+    "Revati": "Deva",
+    # Manushya (human temperament)
+    "Bharani": "Manushya",
+    "Rohini": "Manushya",
+    "Ardra": "Manushya",
+    "Purva Phalguni": "Manushya",
+    "Uttara Phalguni": "Manushya",
+    "Chitra": "Manushya",
+    "Vishakha": "Manushya",
+    "Jyeshtha": "Manushya",
+    "Purva Ashadha": "Manushya",
+    "Uttara Ashadha": "Manushya",
     "Dhanishta": "Manushya",
     "Shatabhisha": "Manushya",
     "Purva Bhadrapada": "Manushya",
-    "Uttara Bhadrapada": "Deva",
-    "Revati": "Deva",
+    "Uttara Bhadrapada": "Manushya",
+    # Rakshasa (demon temperament)
+    "Krittika": "Rakshasa",
+    "Ashlesha": "Rakshasa",
+    "Magha": "Rakshasa",
+    "Mula": "Rakshasa",
 }
 
 
@@ -1225,6 +1222,44 @@ async def get_common_timezones():
     }
 
 
+class GeocodeResponse(BaseModel):
+    display_name: str
+    lat: float
+    lon: float
+
+
+@app.get("/api/geocode", response_model=List[GeocodeResponse])
+async def geocode(query: str):
+    """Forward geocode location name using Nominatim.
+    
+    Done on backend to avoid browser CORS and improve reliability.
+    """
+    try:
+        # Use Nominatim API for forward geocoding
+        url = f"https://nominatim.openstreetmap.org/search?format=json&q={encodeURIComponent(query)}&limit=5"
+        headers = {
+            "User-Agent": "Astrova Kundali App (https://astrova.magnova.ai)"
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            results = []
+            for item in data:
+                results.append(GeocodeResponse(
+                    display_name=item.get("display_name", ""),
+                    lat=float(item["lat"]),
+                    lon=float(item["lon"])
+                ))
+            
+            return results
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/reverse-geocode", response_model=ReverseGeocodeResponse)
 async def reverse_geocode(lat: float, lon: float):
     """Reverse geocode coordinates using Nominatim.
@@ -1252,6 +1287,692 @@ async def reverse_geocode(lat: float, lon: float):
             country=address.get("country"),
             display_name=data.get("display_name") if isinstance(data, dict) else None,
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ChatRequest(BaseModel):
+    message: str
+    kundali_data: Optional[Dict[str, Any]] = None
+    chart_name: Optional[str] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None
+
+
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+
+ASTRO_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_planet_positions",
+            "description": "Get all planet positions with sign, house, degree, and status (retrograde, exalted, debilitated, combust, vargottama). Use this to answer questions about planets, their placements, and planetary combinations (yogas).",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_dasha_periods",
+            "description": "Get Vimshottari Dasha periods including current Mahadasha, Antardasha, and Pratyantardasha with start/end dates. Use this for timing predictions, current period analysis, and future forecasts.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_house_analysis",
+            "description": "Get Bhava Bala (house strengths) with ratings, lords, and scores for all 12 houses. Use this for questions about specific life areas like career (10th), marriage (7th), wealth (2nd/11th), health (6th), etc.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_planetary_strengths",
+            "description": "Get Shad Bala (six-fold strength) for each planet including total strength, required strength, strength ratio, and whether the planet is strong or weak. Use this for questions about planetary power and influence.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_ascendant_info",
+            "description": "Get Lagna (Ascendant) details including sign, degree, nakshatra, and navamsa. Use this for personality, appearance, and general life direction questions.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_nakshatra_and_birth_info",
+            "description": "Get birth nakshatra, Moon sign, birth details (date, time, location), and basic chart identification. Use this for questions about nakshatra characteristics, birth star, and general identity.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_matching_compatibility",
+            "description": "Get Ashtakoota matching scores if two charts are being compared. Returns Varna, Vashya, Tara, Yoni, Graha Maitri, Gana, Bhakoot, and Nadi scores. Use this only for compatibility/matching questions.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+]
+
+
+def _execute_tool(tool_name: str, kundali_data: dict) -> str:
+    """Execute a tool call and return the relevant kundali data as JSON string."""
+    if tool_name == "get_planet_positions":
+        planets = kundali_data.get("planets", {})
+        result = {}
+        for name, info in planets.items():
+            if isinstance(info, dict):
+                result[name] = {
+                    "sign": info.get("sign"),
+                    "house": info.get("house_whole_sign"),
+                    "degree": f"{info.get('deg', 0)}°{info.get('min', 0)}'",
+                    "retrograde": info.get("retrograde", False),
+                    "exalted": info.get("exalted", False),
+                    "debilitated": info.get("debilitated", False),
+                    "combust": info.get("combust", False),
+                    "vargottama": info.get("vargottama", False),
+                    "navamsa_sign": info.get("navamsa_sign"),
+                    "nakshatra": info.get("nakshatra"),
+                }
+        upagrahas = kundali_data.get("upagrahas", {})
+        for name, info in upagrahas.items():
+            if isinstance(info, dict):
+                result[name] = {
+                    "sign": info.get("sign"),
+                    "house": info.get("house_whole_sign"),
+                    "degree": f"{info.get('deg', 0)}°{info.get('min', 0)}'",
+                    "type": "upagraha",
+                }
+        return json.dumps(result, indent=2)
+
+    elif tool_name == "get_dasha_periods":
+        dasha = kundali_data.get("dasha", {})
+        result = {
+            "current_dasha": dasha.get("current_dasha"),
+            "moon_nakshatra": dasha.get("moon_nakshatra_name"),
+            "moon_nakshatra_pada": dasha.get("moon_nakshatra_pada"),
+            "periods": [],
+        }
+        for p in dasha.get("periods", []):
+            if isinstance(p, dict):
+                period = {
+                    "planet": p.get("planet"),
+                    "start_date": p.get("start_date"),
+                    "end_date": p.get("end_date"),
+                    "is_current": p.get("is_current", False),
+                }
+                antardashas = []
+                for ad in p.get("antardashas", []):
+                    if isinstance(ad, dict):
+                        antardashas.append({
+                            "planet": ad.get("planet"),
+                            "start_date": ad.get("start_date"),
+                            "end_date": ad.get("end_date"),
+                            "is_current": ad.get("is_current", False),
+                        })
+                period["antardashas"] = antardashas
+                result["periods"].append(period)
+        return json.dumps(result, indent=2)
+
+    elif tool_name == "get_house_analysis":
+        bhava = kundali_data.get("bhava_bala", {})
+        result = {}
+        for house, info in bhava.items():
+            if isinstance(info, dict):
+                result[f"House {house}"] = {
+                    "lord": info.get("lord"),
+                    "total_strength": info.get("total"),
+                    "rating": info.get("rating"),
+                    "dig_bala": info.get("dig_bala"),
+                    "drishti_bala": info.get("drishti_bala"),
+                }
+        return json.dumps(result, indent=2)
+
+    elif tool_name == "get_planetary_strengths":
+        shad = kundali_data.get("shad_bala", {})
+        result = {}
+        for name, info in shad.items():
+            if isinstance(info, dict):
+                result[name] = {
+                    "total_rupas": info.get("total"),
+                    "required_rupas": info.get("required"),
+                    "strength_ratio": info.get("ratio"),
+                    "is_strong": info.get("is_strong"),
+                    "strength_label": info.get("strength"),
+                    "components": {
+                        "sthana_bala": info.get("sthana_bala"),
+                        "dig_bala": info.get("dig_bala"),
+                        "kala_bala": info.get("kala_bala"),
+                        "chesta_bala": info.get("chesta_bala"),
+                        "naisargika_bala": info.get("naisargika_bala"),
+                        "drik_bala": info.get("drik_bala"),
+                    },
+                }
+        return json.dumps(result, indent=2)
+
+    elif tool_name == "get_ascendant_info":
+        lagna = kundali_data.get("lagna", {})
+        return json.dumps({
+            "sign": lagna.get("sign"),
+            "degree": f"{lagna.get('deg', 0)}°{lagna.get('min', 0)}'",
+            "nakshatra": lagna.get("nakshatra"),
+            "navamsa_sign": lagna.get("navamsa_sign"),
+            "house": lagna.get("house_whole_sign"),
+        }, indent=2)
+
+    elif tool_name == "get_nakshatra_and_birth_info":
+        dasha = kundali_data.get("dasha", {})
+        birth = kundali_data.get("birth", {})
+        moon = kundali_data.get("planets", {}).get("Moon", {})
+        return json.dumps({
+            "moon_nakshatra": dasha.get("moon_nakshatra_name"),
+            "moon_nakshatra_pada": dasha.get("moon_nakshatra_pada"),
+            "moon_sign": moon.get("sign") if isinstance(moon, dict) else None,
+            "birth_date": birth.get("date"),
+            "birth_time": birth.get("time"),
+            "birth_location": birth.get("location"),
+        }, indent=2)
+
+    elif tool_name == "get_matching_compatibility":
+        return json.dumps({"note": "No matching data available in current chart. Load two charts and use the Kundali Matcher for compatibility analysis."})
+
+    return json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+
+def _call_openrouter(messages: list, tools: list) -> dict:
+    """Call OpenRouter API with messages and tools."""
+    payload = json.dumps({
+        "model": "stepfun/step-2-16k",
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+        "temperature": 0.7,
+        "max_tokens": 2048,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://astrova.app",
+            "X-Title": "Astrova Vedic Astrologer",
+        },
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+SYSTEM_PROMPT = """You are an expert Vedic astrologer AI for the Astrova app. You have deep knowledge of:
+- Jyotish Shastra (Vedic Astrology) including Parashari and Jaimini systems
+- Vimshottari Dasha system (Mahadasha, Antardasha, Pratyantardasha)
+- Shad Bala (six-fold planetary strength) and Bhava Bala (house strength)
+- Ashtakoota matching system for compatibility
+- Nakshatras, their padas, and characteristics
+- Planetary yogas, aspects, and combinations
+- Remedial measures (mantras, gemstones, charity, rituals)
+
+IMPORTANT RULES:
+1. ALWAYS use the available tools to read the actual chart data before answering. Never guess placements.
+2. Provide specific, personalized readings based on the actual chart data.
+3. Reference specific planets, houses, signs, and degrees from the data.
+4. Explain astrological concepts in an accessible way.
+5. Be encouraging but honest about challenges shown in the chart.
+6. For timing questions, reference specific Dasha periods with dates.
+7. Format responses with **bold** headers and clear structure.
+8. When discussing remedies, mention they should be done after consulting a qualified astrologer.
+9. Use the person's chart name when addressing them.
+"""
+
+
+def _generate_astro_insights(kundali_data: dict) -> dict:
+    """Extract key astrological insights from kundali data."""
+    insights = {}
+
+    # Lagna
+    lagna = kundali_data.get("lagna", {})
+    insights["ascendant"] = lagna.get("sign", "Unknown")
+    insights["ascendant_degree"] = f"{lagna.get('deg', 0)}°{lagna.get('min', 0)}'"
+
+    # Planets
+    planets = kundali_data.get("planets", {})
+    planet_summary = []
+    for name, info in planets.items():
+        if not isinstance(info, dict):
+            continue
+        status = []
+        if info.get("retrograde"):
+            status.append("retrograde")
+        if info.get("exalted"):
+            status.append("exalted")
+        if info.get("debilitated"):
+            status.append("debilitated")
+        if info.get("combust"):
+            status.append("combust")
+        if info.get("vargottama"):
+            status.append("vargottama")
+        planet_summary.append({
+            "name": name,
+            "sign": info.get("sign", ""),
+            "house": info.get("house_whole_sign", 0),
+            "degree": f"{info.get('deg', 0)}°{info.get('min', 0)}'",
+            "status": status,
+            "navamsa_sign": info.get("navamsa_sign", ""),
+        })
+    insights["planets"] = planet_summary
+
+    # Moon info
+    moon = planets.get("Moon", {})
+    insights["moon_sign"] = moon.get("sign", "Unknown")
+    insights["moon_house"] = moon.get("house_whole_sign", 0)
+
+    # Sun info
+    sun = planets.get("Sun", {})
+    insights["sun_sign"] = sun.get("sign", "Unknown")
+
+    # Dasha
+    dasha = kundali_data.get("dasha", {})
+    insights["current_dasha"] = dasha.get("current_dasha", "Unknown")
+    insights["nakshatra"] = dasha.get("moon_nakshatra_name", "Unknown")
+    insights["nakshatra_pada"] = dasha.get("moon_nakshatra_pada", 0)
+
+    # Current dasha period details
+    periods = dasha.get("periods", [])
+    current_period = None
+    for p in periods:
+        if isinstance(p, dict) and p.get("is_current"):
+            current_period = p
+            break
+    if current_period:
+        insights["current_mahadasha"] = current_period.get("planet", "")
+        insights["mahadasha_end"] = current_period.get("end_date", "")
+        # Current antardasha
+        antardashas = current_period.get("antardashas", [])
+        for ad in antardashas:
+            if isinstance(ad, dict):
+                # Find current antardasha by checking dates
+                insights["antardashas_count"] = len(antardashas)
+
+    # Shad Bala summary
+    shad_bala = kundali_data.get("shad_bala", {})
+    strong_planets = []
+    weak_planets = []
+    for name, bala in shad_bala.items():
+        if not isinstance(bala, dict):
+            continue
+        if bala.get("is_strong"):
+            strong_planets.append(name)
+        elif bala.get("strength") == "Weak":
+            weak_planets.append(name)
+    insights["strong_planets"] = strong_planets
+    insights["weak_planets"] = weak_planets
+
+    # Bhava Bala summary
+    bhava_bala = kundali_data.get("bhava_bala", {})
+    strong_houses = []
+    weak_houses = []
+    for house, bala in bhava_bala.items():
+        if not isinstance(bala, dict):
+            continue
+        rating = bala.get("rating", "")
+        if rating in ("Very Strong", "Strong"):
+            strong_houses.append({"house": house, "lord": bala.get("lord", ""), "rating": rating})
+        elif rating == "Weak":
+            weak_houses.append({"house": house, "lord": bala.get("lord", ""), "rating": rating})
+    insights["strong_houses"] = strong_houses
+    insights["weak_houses"] = weak_houses
+
+    return insights
+
+
+def _build_astro_response(message: str, insights: dict, chart_name: str) -> str:
+    """Build a comprehensive astrological response based on the message and chart data."""
+    msg = message.lower().strip()
+    name = chart_name or "this person"
+    asc = insights.get("ascendant", "Unknown")
+    moon_sign = insights.get("moon_sign", "Unknown")
+    sun_sign = insights.get("sun_sign", "Unknown")
+    nakshatra = insights.get("nakshatra", "Unknown")
+    current_dasha = insights.get("current_dasha", "Unknown")
+    strong = insights.get("strong_planets", [])
+    weak = insights.get("weak_planets", [])
+
+    # Personality descriptions by ascendant
+    asc_traits = {
+        "Aries": "bold, pioneering, and action-oriented. Natural leaders with strong willpower and competitive spirit.",
+        "Taurus": "grounded, patient, and value-driven. They seek stability, comfort, and have a strong aesthetic sense.",
+        "Gemini": "intellectually curious, communicative, and adaptable. Quick-witted with diverse interests.",
+        "Cancer": "nurturing, emotionally intuitive, and deeply connected to family. Strong protective instincts.",
+        "Leo": "charismatic, creative, and confident. Natural performers who seek recognition and self-expression.",
+        "Virgo": "analytical, detail-oriented, and service-minded. Perfectionists with strong practical intelligence.",
+        "Libra": "diplomatic, harmony-seeking, and relationship-oriented. Strong sense of justice and beauty.",
+        "Scorpio": "intense, transformative, and deeply perceptive. Powerful emotional depth and investigative nature.",
+        "Sagittarius": "optimistic, philosophical, and freedom-loving. Seekers of truth and higher knowledge.",
+        "Capricorn": "disciplined, ambitious, and responsible. Strong work ethic with long-term vision.",
+        "Aquarius": "innovative, humanitarian, and independent. Progressive thinkers who value individuality.",
+        "Pisces": "compassionate, intuitive, and spiritually inclined. Deeply empathetic with artistic sensibilities.",
+    }
+
+    # Moon sign emotional nature
+    moon_traits = {
+        "Aries": "emotionally impulsive and passionate. Quick to react but also quick to forgive.",
+        "Taurus": "emotionally stable and comfort-seeking. Needs security and routine for inner peace.",
+        "Gemini": "emotionally versatile and intellectually driven. Processes feelings through communication.",
+        "Cancer": "deeply emotional and nurturing. Highly sensitive to the moods of others.",
+        "Leo": "emotionally warm and generous. Needs appreciation and creative expression.",
+        "Virgo": "emotionally reserved and analytical. Processes feelings through practical action.",
+        "Libra": "emotionally balanced and relationship-focused. Seeks harmony in all interactions.",
+        "Scorpio": "emotionally intense and transformative. Deep feelings that run beneath the surface.",
+        "Sagittarius": "emotionally optimistic and freedom-loving. Needs space and adventure.",
+        "Capricorn": "emotionally disciplined and reserved. Takes time to open up but deeply loyal.",
+        "Aquarius": "emotionally detached yet humanitarian. Values intellectual connection over emotional.",
+        "Pisces": "emotionally empathetic and intuitive. Absorbs the feelings of those around them.",
+    }
+
+    # Dasha interpretations
+    dasha_meanings = {
+        "Sun": "a period of authority, self-expression, and career advancement. Government and father-related matters are highlighted.",
+        "Moon": "a period of emotional growth, public life, and maternal influences. Travel and mental peace are key themes.",
+        "Mars": "a period of energy, courage, and action. Property matters, siblings, and technical pursuits are highlighted.",
+        "Mercury": "a period of intellect, communication, and business. Education, writing, and analytical skills flourish.",
+        "Jupiter": "a period of wisdom, expansion, and spiritual growth. Higher education, children, and fortune are favored.",
+        "Venus": "a period of love, luxury, and artistic expression. Relationships, vehicles, and comforts are highlighted.",
+        "Saturn": "a period of discipline, hard work, and karmic lessons. Patience and perseverance bring lasting rewards.",
+        "Rahu": "a period of ambition, unconventional paths, and material desires. Foreign connections and sudden changes.",
+        "Ketu": "a period of spiritual awakening, detachment, and past-life karma. Introspection and liberation themes.",
+    }
+
+    # Build response based on query type
+    if any(w in msg for w in ["overview", "summary", "tell me about", "analyze", "reading", "what does my chart"]):
+        planets_info = insights.get("planets", [])
+        retro_planets = [p["name"] for p in planets_info if "retrograde" in p.get("status", [])]
+        exalted_planets = [p["name"] for p in planets_info if "exalted" in p.get("status", [])]
+        debilitated_planets = [p["name"] for p in planets_info if "debilitated" in p.get("status", [])]
+
+        resp = f"**Birth Chart Overview for {name}**\n\n"
+        resp += f"**Ascendant (Lagna):** {asc} — {asc_traits.get(asc, 'A unique blend of qualities.')}\n\n"
+        resp += f"**Moon Sign:** {moon_sign} — {moon_traits.get(moon_sign, 'Complex emotional nature.')}\n\n"
+        resp += f"**Sun Sign:** {sun_sign}\n\n"
+        resp += f"**Birth Nakshatra:** {nakshatra} (Pada {insights.get('nakshatra_pada', '')})\n\n"
+        resp += f"**Current Dasha:** {current_dasha} — {dasha_meanings.get(current_dasha.split('-')[0].strip() if '-' in current_dasha else current_dasha, 'A significant planetary period.')}\n\n"
+
+        if strong:
+            resp += f"**Strong Planets:** {', '.join(strong)} — These planets give you natural advantages in their significations.\n\n"
+        if weak:
+            resp += f"**Weak Planets:** {', '.join(weak)} — These areas may require more conscious effort and remedial measures.\n\n"
+        if exalted_planets:
+            resp += f"**Exalted Planets:** {', '.join(exalted_planets)} — Exceptionally powerful placements bringing blessings.\n\n"
+        if debilitated_planets:
+            resp += f"**Debilitated Planets:** {', '.join(debilitated_planets)} — Challenging placements that offer growth through struggle.\n\n"
+        if retro_planets:
+            resp += f"**Retrograde Planets:** {', '.join(retro_planets)} — Internalized energies requiring introspection.\n\n"
+
+        return resp
+
+    elif any(w in msg for w in ["career", "job", "work", "profession", "business"]):
+        resp = f"**Career Analysis for {name}**\n\n"
+        resp += f"With **{asc} Ascendant**, "
+        career_hints = {
+            "Aries": "you're suited for leadership roles, entrepreneurship, military, sports, or engineering.",
+            "Taurus": "you excel in finance, banking, agriculture, arts, hospitality, or luxury goods.",
+            "Gemini": "you thrive in communication, media, writing, teaching, or technology.",
+            "Cancer": "you're drawn to caregiving, real estate, food industry, or public service.",
+            "Leo": "you shine in management, entertainment, politics, or creative leadership.",
+            "Virgo": "you excel in healthcare, accounting, research, editing, or quality control.",
+            "Libra": "you're suited for law, diplomacy, fashion, design, or counseling.",
+            "Scorpio": "you thrive in research, investigation, psychology, surgery, or occult sciences.",
+            "Sagittarius": "you're drawn to education, philosophy, travel industry, or spiritual teaching.",
+            "Capricorn": "you excel in administration, engineering, mining, or corporate leadership.",
+            "Aquarius": "you thrive in technology, social work, innovation, or humanitarian causes.",
+            "Pisces": "you're drawn to healing, arts, spirituality, marine fields, or charitable work.",
+        }
+        resp += career_hints.get(asc, "your career path is unique and multifaceted.") + "\n\n"
+
+        # 10th house analysis
+        planets_info = insights.get("planets", [])
+        tenth_house_planets = [p for p in planets_info if p.get("house") == 10]
+        if tenth_house_planets:
+            names = [p["name"] for p in tenth_house_planets]
+            resp += f"**Planets in 10th House:** {', '.join(names)} — This strongly influences your professional life and public image.\n\n"
+
+        if strong:
+            resp += f"Your strong planets ({', '.join(strong)}) support career success in their respective domains.\n\n"
+
+        resp += f"**Current Dasha ({current_dasha}):** {dasha_meanings.get(current_dasha.split('-')[0].strip() if '-' in current_dasha else current_dasha, 'This period shapes your current career trajectory.')}\n"
+        return resp
+
+    elif any(w in msg for w in ["love", "marriage", "relationship", "partner", "spouse"]):
+        resp = f"**Relationship Analysis for {name}**\n\n"
+        planets_info = insights.get("planets", [])
+        venus = next((p for p in planets_info if p["name"] == "Venus"), None)
+        seventh_house = [p for p in planets_info if p.get("house") == 7]
+
+        resp += f"With **{asc} Ascendant** and **Moon in {moon_sign}**, "
+        resp += "your emotional needs and relationship style are shaped by these core energies.\n\n"
+
+        if venus:
+            resp += f"**Venus** is in **{venus['sign']}** (House {venus['house']})"
+            if venus.get("status"):
+                resp += f" — {', '.join(venus['status'])}"
+            resp += ". Venus governs love, beauty, and partnerships.\n\n"
+
+        if seventh_house:
+            names = [p["name"] for p in seventh_house]
+            resp += f"**Planets in 7th House (Marriage):** {', '.join(names)} — These directly influence your partnership dynamics.\n\n"
+
+        resp += f"**Current Dasha ({current_dasha})** influences your relationship timeline and experiences.\n"
+        return resp
+
+    elif any(w in msg for w in ["health", "body", "physical", "wellness", "disease"]):
+        resp = f"**Health Indicators for {name}**\n\n"
+        resp += f"With **{asc} Ascendant**, "
+        health_hints = {
+            "Aries": "watch for head-related issues, fevers, and inflammation. Stay active but avoid recklessness.",
+            "Taurus": "throat, thyroid, and neck areas need attention. Maintain balanced diet and avoid excess.",
+            "Gemini": "respiratory system and nervous system are sensitive. Mental health and breathing exercises help.",
+            "Cancer": "digestive system and chest area need care. Emotional health directly impacts physical wellbeing.",
+            "Leo": "heart and spine health are important. Regular cardio and maintaining vitality are key.",
+            "Virgo": "digestive and intestinal health need attention. Stress management and clean diet are essential.",
+            "Libra": "kidney and lower back areas need care. Balance in all things supports health.",
+            "Scorpio": "reproductive and excretory systems need attention. Emotional detox is as important as physical.",
+            "Sagittarius": "liver, hips, and thighs need care. Stay active and avoid excess indulgence.",
+            "Capricorn": "bones, joints, and knees need attention. Calcium intake and regular exercise are important.",
+            "Aquarius": "circulatory system and ankles need care. Unconventional healing methods may benefit you.",
+            "Pisces": "feet and lymphatic system need attention. Adequate rest and spiritual practices support health.",
+        }
+        resp += health_hints.get(asc, "maintain a balanced lifestyle for optimal health.") + "\n\n"
+
+        if weak:
+            resp += f"**Weak planets ({', '.join(weak)})** may indicate areas requiring extra health attention.\n\n"
+        if strong:
+            resp += f"**Strong planets ({', '.join(strong)})** provide natural vitality in their domains.\n"
+        return resp
+
+    elif any(w in msg for w in ["dasha", "period", "current", "timing", "prediction", "future"]):
+        resp = f"**Dasha Analysis for {name}**\n\n"
+        resp += f"**Current Mahadasha:** {current_dasha}\n\n"
+        dasha_planet = current_dasha.split("-")[0].strip() if "-" in current_dasha else current_dasha
+        resp += f"**Interpretation:** {dasha_meanings.get(dasha_planet, 'This is a significant period of transformation.')}\n\n"
+
+        mahadasha_end = insights.get("mahadasha_end", "")
+        if mahadasha_end:
+            resp += f"**Mahadasha ends:** {mahadasha_end}\n\n"
+
+        resp += "The dasha system reveals the unfolding of your karma through planetary periods. Each period activates different areas of life based on the ruling planet's placement and strength in your chart.\n"
+        return resp
+
+    elif any(w in msg for w in ["planet", "strength", "strong", "weak", "bala"]):
+        resp = f"**Planetary Strength Analysis for {name}**\n\n"
+        planets_info = insights.get("planets", [])
+
+        for p in planets_info:
+            status_str = ""
+            if p.get("status"):
+                status_str = f" ({', '.join(p['status'])})"
+            strength = "Strong" if p["name"] in strong else ("Weak" if p["name"] in weak else "Medium")
+            emoji = "+" if strength == "Strong" else ("-" if strength == "Weak" else "~")
+            resp += f"**{p['name']}** in {p['sign']} (House {p['house']}){status_str} — [{emoji} {strength}]\n\n"
+
+        return resp
+
+    elif any(w in msg for w in ["house", "bhava", "area"]):
+        resp = f"**House Analysis for {name}**\n\n"
+        strong_h = insights.get("strong_houses", [])
+        weak_h = insights.get("weak_houses", [])
+
+        house_meanings = {
+            "1": "Self, personality, physical body",
+            "2": "Wealth, family, speech, values",
+            "3": "Siblings, courage, communication",
+            "4": "Home, mother, comfort, education",
+            "5": "Children, creativity, intelligence",
+            "6": "Enemies, health, service, debts",
+            "7": "Marriage, partnerships, business",
+            "8": "Transformation, longevity, occult",
+            "9": "Fortune, dharma, higher learning",
+            "10": "Career, status, public image",
+            "11": "Gains, income, aspirations",
+            "12": "Losses, spirituality, foreign lands",
+        }
+
+        if strong_h:
+            resp += "**Strong Houses:**\n"
+            for h in strong_h:
+                hnum = str(h["house"])
+                resp += f"- House {hnum} ({house_meanings.get(hnum, '')}) — Lord: {h['lord']} [{h['rating']}]\n"
+            resp += "\n"
+
+        if weak_h:
+            resp += "**Weak Houses:**\n"
+            for h in weak_h:
+                hnum = str(h["house"])
+                resp += f"- House {hnum} ({house_meanings.get(hnum, '')}) — Lord: {h['lord']} [{h['rating']}]\n"
+            resp += "\n"
+
+        return resp
+
+    elif any(w in msg for w in ["remedy", "remedies", "solution", "fix", "improve"]):
+        resp = f"**Remedial Suggestions for {name}**\n\n"
+        if weak:
+            for planet in weak:
+                remedies = {
+                    "Sun": "Offer water to the Sun at sunrise. Wear ruby (after consultation). Chant Surya mantra. Respect father figures.",
+                    "Moon": "Wear pearl or moonstone. Drink water from silver vessel. Chant Chandra mantra. Serve your mother.",
+                    "Mars": "Wear red coral. Chant Mangal mantra. Practice physical exercise. Donate red items on Tuesdays.",
+                    "Mercury": "Wear emerald. Chant Budha mantra. Study and read regularly. Feed green vegetables to cows.",
+                    "Jupiter": "Wear yellow sapphire. Chant Guru mantra. Respect teachers and elders. Donate yellow items on Thursdays.",
+                    "Venus": "Wear diamond or white sapphire. Chant Shukra mantra. Appreciate arts and beauty. Donate white items on Fridays.",
+                    "Saturn": "Wear blue sapphire (with caution). Chant Shani mantra. Serve the elderly and underprivileged. Practice patience.",
+                    "Rahu": "Wear hessonite garnet. Chant Rahu mantra. Avoid shortcuts and deception. Donate to the needy.",
+                    "Ketu": "Wear cat's eye. Chant Ketu mantra. Practice meditation and spirituality. Donate blankets to the poor.",
+                }
+                resp += f"**For weak {planet}:**\n{remedies.get(planet, 'Consult an astrologer for specific remedies.')}\n\n"
+        else:
+            resp += "Your chart shows generally strong planetary positions. Focus on maintaining balance through:\n"
+            resp += "- Regular meditation and spiritual practice\n"
+            resp += "- Charity and service to others\n"
+            resp += "- Respecting planetary days and their significations\n"
+
+        return resp
+
+    else:
+        # General greeting or unknown query
+        resp = f"**Astrological Insights for {name}**\n\n"
+        resp += f"Your chart shows **{asc} Ascendant** with **Moon in {nakshatra}** nakshatra.\n\n"
+        resp += f"**Current Dasha:** {current_dasha}\n\n"
+        resp += "I can help you with:\n"
+        resp += "- **Overview** — Full chart summary\n"
+        resp += "- **Career** — Professional guidance\n"
+        resp += "- **Relationships** — Love and marriage insights\n"
+        resp += "- **Health** — Physical wellness indicators\n"
+        resp += "- **Dasha/Timing** — Current planetary period analysis\n"
+        resp += "- **Planets** — Planetary strength breakdown\n"
+        resp += "- **Houses** — Bhava (house) analysis\n"
+        resp += "- **Remedies** — Suggestions for weak planets\n\n"
+        resp += "Ask me anything about your birth chart!\n"
+        return resp
+
+
+@app.post("/api/chat")
+async def astro_chat(request: ChatRequest):
+    """AI Astrologer chat endpoint using OpenRouter with tool-calling."""
+    try:
+        if not request.kundali_data:
+            return {
+                "response": "Please generate or load a birth chart first so I can provide personalized astrological insights. I need your kundali data to give accurate readings.",
+                "has_chart": False,
+            }
+
+        if not OPENROUTER_API_KEY:
+            # Fallback to rule-based if no API key
+            insights = _generate_astro_insights(request.kundali_data)
+            response_text = _build_astro_response(
+                request.message, insights, request.chart_name or "your chart"
+            )
+            return {"response": response_text, "has_chart": True}
+
+        # Build messages for OpenRouter
+        chart_name = request.chart_name or "this person"
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT + f"\nThe current chart belongs to: {chart_name}"},
+        ]
+
+        # Add conversation history if provided
+        if request.conversation_history:
+            for msg in request.conversation_history[-10:]:  # Last 10 messages
+                if msg.get("role") in ("user", "assistant"):
+                    messages.append({"role": msg["role"], "content": msg["content"]})
+
+        messages.append({"role": "user", "content": request.message})
+
+        # Call OpenRouter with tools
+        max_tool_rounds = 5
+        for _ in range(max_tool_rounds):
+            result = _call_openrouter(messages, ASTRO_TOOLS)
+            choice = result.get("choices", [{}])[0]
+            msg = choice.get("message", {})
+
+            # Check if the model wants to call tools
+            tool_calls = msg.get("tool_calls")
+            if not tool_calls:
+                # No tool calls — we have the final response
+                return {
+                    "response": msg.get("content", "I couldn't generate a response. Please try again."),
+                    "has_chart": True,
+                }
+
+            # Execute tool calls and add results
+            messages.append(msg)  # Add assistant message with tool_calls
+            for tc in tool_calls:
+                fn_name = tc.get("function", {}).get("name", "")
+                tool_result = _execute_tool(fn_name, request.kundali_data)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": tool_result,
+                })
+
+        # If we exhausted tool rounds, make one final call without tools
+        final = _call_openrouter(messages, [])
+        final_msg = final.get("choices", [{}])[0].get("message", {})
+        return {
+            "response": final_msg.get("content", "I analyzed your chart but couldn't formulate a complete response. Please try a more specific question."),
+            "has_chart": True,
+        }
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if hasattr(e, "read") else str(e)
+        raise HTTPException(status_code=502, detail=f"AI service error: {error_body}")
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=503, detail=f"AI service unavailable: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
